@@ -624,7 +624,10 @@ with tab1:
             st.warning("No data available for this metric.")
         else:
             q_low = df_map[metric].quantile(0.02)
-            q_hi = df_map[metric].quantile(0.98)
+            if metric == "Calculated_LCOE" or metric == "Uniform_LCOE":
+                q_hi = 250
+            else:
+                q_hi = df_map[metric].quantile(0.75)
             if np.isclose(q_low, q_hi):
                 q_low, q_hi = df_map[metric].min(), df_map[metric].max()
 
@@ -653,9 +656,7 @@ with tab1:
                 coloraxis_colorbar=dict(
                     title=dict(
                         text=metric_label_wrapped
-                    )
-                )
-            )
+                    )))
             fig.update_layout(mapbox_style="carto-positron", margin=dict(l=0, r=0, t=0, b=0))
             st.plotly_chart(fig, use_container_width=True)
 
@@ -684,11 +685,11 @@ with tab2:
                 reg_wind_kw = float(df_reg["wind_costs_usd_kw"].mean()) if "wind_costs_usd_kw" in df_reg else 1500
 
                 # convert back to USD/MW for existing CAPEX function baseline math
-                reg_solar_mw = reg_solar_kw 
-                reg_wind_mw = reg_wind_kw 
+                reg_solar_mw = reg_solar_kw
+                reg_wind_mw = reg_wind_kw
 
                 # proxy regional electrolyser default from elec component (or tech default if preferred)
-                default_elec = 2.3 if tech == "Wind" else 3.0
+                default_elec = 2.3 if tech == "Wind" else 2.6
                 estimated_wacc = df_reg["Estimated_WACC"]
                 default_wacc = estimated_wacc.mean()
 
@@ -701,6 +702,7 @@ with tab2:
                     wacc_reduction = st.number_input(f"Reduction on WACC baseline (regional mean of {default_wacc:.1f}%)", min_value=0.0, max_value=25.0, value=0.0, step=1.0)
                 with c4:
                     opex = st.number_input("Initial OPEX baseline (%, CAPEX)", min_value=0.0, max_value=10.0, value=default_elec, step=10.0)
+
 
                 st.markdown(
                     f"Regional baseline CAPEX averages: "
@@ -742,7 +744,7 @@ with tab2:
                     if map_df.empty:
                         st.warning("No mappable points for selected region.")
                     else:
-                        max_region_points = 6000
+                        max_region_points = 12000
                         if len(map_df) > max_region_points:
                             map_df = map_df.sample(max_region_points, random_state=42)
 
@@ -751,31 +753,43 @@ with tab2:
                         hover_data = {
                             "region": True,
                             "country_name": True if "country_name" in map_df.columns else False,
-                            "latitude": ":.2f",
-                            "longitude": ":.2f",
-                            "Recalculated_LCOE": VAR_MAP["Recalculated_LCOE"]["fmt"] if "Recalculated_LCOE" in map_df.columns else False,
                             map_metric: VAR_MAP[map_metric]["fmt"],
                         }
 
-                        fig = px.scatter_mapbox(
+                        geojson_map, map_df_cells = build_cell_geojson(
                             map_df,
-                            lat="latitude",
-                            lon="longitude",
-                            color=map_metric,
-                            color_continuous_scale="Turbo",
-                            range_color=(0, q_hi),
-                            labels={k: VAR_MAP[k]["label"] for k in VAR_MAP if k in map_df.columns},
-                            hover_data=hover_data,
-                            zoom=3,
-                            height=420,
+                            value_col=map_metric,
+                            id_col="cell_id",
                         )
 
-                        fig.update_layout(
-                            mapbox_style="carto-positron",
-                            coloraxis_colorbar=dict(title=metric_label),
-                            margin=dict(l=0, r=0, t=30, b=0),
-                            title=f"{metric_label} — {selected_region}",
-                        )
+                        if map_df_cells.empty:
+                            st.warning("No mappable points for selected region.")
+                        else:
+                            center_lat = float(map_df_cells["latitude"].mean())
+                            center_lon = float(map_df_cells["longitude"].mean())
+
+                            fig = px.choropleth_mapbox(
+                                map_df_cells,
+                                geojson=geojson_map,
+                                locations="cell_id",
+                                featureidkey="properties.cell_id",
+                                color=map_metric,
+                                color_continuous_scale="Turbo",
+                                range_color=(0, q_hi),
+                                labels={k: VAR_MAP[k]["label"] for k in VAR_MAP if k in map_df_cells.columns},
+                                hover_data=hover_data,
+                                center={"lat": center_lat, "lon": center_lon},
+                                zoom=3,
+                                opacity=0.65,
+                                height=420,
+                                title=f"{metric_label} — {selected_region}",
+                            )
+
+                            fig.update_layout(
+                                mapbox_style="carto-positron",
+                                coloraxis_colorbar=dict(title=metric_label),
+                                margin=dict(l=0, r=0, t=30, b=0),
+                            )
 
                         st.plotly_chart(fig, use_container_width=True)
 
@@ -793,7 +807,6 @@ with tab3:
             index=0,
             key="region_LCOE_field",
         )
-        st.write(LCOE_field)
         LCOE_var = LABEL_TO_VAR[LCOE_field]
         reg_summary = summarize_group(df_sf, group_col="region", LCOE_col=LCOE_var)
         if reg_summary.empty:
@@ -872,6 +885,7 @@ with tab3:
                 x="region",
                 y="LCOE_component",
                 color="component",
+                range_y=[0, 150],
                 barmode="stack",
                 title=f"Contributions to the {breakdown_suffix} LCOE (USD/MWh)",
                 labels={"LCOE_component": "LCOE component (USD/MWh)", "region": "Region"},
