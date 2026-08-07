@@ -469,29 +469,53 @@ def load_points_slice_from_nc(tech: str, columns: list[str]) -> pd.DataFrame:
 def change_capex_absolute_df(
     df: pd.DataFrame,
     solar_capex: float,
-    solar_capex_original: float,
+    tech: str,
     wind_capex: float,
-    wind_capex_original: float,
-    elec_capex: float,
-    initial_capex: float,
+    opex_assumption: float,
+    estimated_wacc: float,
+    wacc_reduction: float,
+    lifetime_years: int = 20,
 ) -> pd.DataFrame:
     out = df.copy()
 
-    ren_LCOE = out["levelised_cost_ren"]
-    elec_LCOE = out["levelised_cost_elec"]
-    total_LCOE = out["levelised_cost"]
+    if "Calculated_LCOE" not in out.columns:
+        raise ValueError("Missing Calculated_LCOE column for recalculation")
 
-    solar_costs_frac = out["solar_costs"] / out["renewables_costs"]
-    solar_costs_frac = solar_costs_frac.replace([np.inf, -np.inf], np.nan).fillna(0.0)
+    if "electricity_production" not in out.columns:
+        raise ValueError("Missing electricity_production column for recalculation")
 
-    new_ren_LCOE = (
-        (1 - solar_costs_frac) * ren_LCOE * (1 + (wind_capex - wind_capex_original) / wind_capex_original)
-        + solar_costs_frac * ren_LCOE * (1 + (solar_capex - solar_capex_original) / solar_capex_original)
+    electricity_production = pd.to_numeric(out["electricity_production"], errors="coerce").astype(float)
+
+    if tech.lower() == "wind":
+        recalc_capex_kw = float(wind_capex)
+    else:
+        recalc_capex_kw = float(solar_capex)
+
+    capex_per_mw = recalc_capex_kw * 1000.0
+    annual_generation_mwh = np.where(electricity_production > 0, electricity_production / 1000.0, np.nan)
+
+    discount_rate = max(float(estimated_wacc) - float(wacc_reduction), 0.0) / 100.0
+    if discount_rate > 0:
+        capital_recovery_factor = discount_rate / (1 - (1 + discount_rate) ** (-lifetime_years))
+    else:
+        capital_recovery_factor = 1.0 / lifetime_years
+
+    annualized_capex = capex_per_mw * capital_recovery_factor
+    annual_opex = capex_per_mw * (float(opex_assumption) / 100.0)
+
+    recalc_capex_LCOE = np.where(
+        annual_generation_mwh > 0,
+        annualized_capex / annual_generation_mwh,
+        np.nan,
     )
-    new_elec_LCOE = elec_LCOE * (1 + (elec_capex - initial_capex) / initial_capex)
+    recalc_opex_LCOE = np.where(
+        annual_generation_mwh > 0,
+        annual_opex / annual_generation_mwh,
+        np.nan,
+    )
 
-    out["Calculated_LCOE"] = total_LCOE - ren_LCOE + new_ren_LCOE - elec_LCOE + new_elec_LCOE
-    out["delta_LCOE"] = out["Calculated_LCOE"] - out["levelised_cost"]
+    out["Recalculated_LCOE"] = recalc_capex_LCOE + recalc_opex_LCOE
+    out["delta_LCOE"] = out["Recalculated_LCOE"] - out["Calculated_LCOE"]
     return out
 
 
@@ -508,11 +532,8 @@ def summarize_group(df: pd.DataFrame, group_col: str, LCOE_col: str = "levelised
             LCOE_mean=(LCOE_col, "mean"),
             LCOE_p10=(LCOE_col, lambda x: x.quantile(0.1)),
             LCOE_p90=(LCOE_col, lambda x: x.quantile(0.9)),
-            carbon_mean=("carbon_intensity", "mean"),
-            electrolyser_capacity_mean_mw=("electrolyser_capacity", "mean"),
             solar_capex_usd_kw_mean=("solar_costs_usd_kw", "mean"),
             wind_capex_usd_kw_mean=("wind_costs_usd_kw", "mean"),
-            elec_capex_component_mean=("levelised_cost_elec", "mean"),
         )
         .sort_values("LCOE_mean")
     )
@@ -532,6 +553,14 @@ needed_cols = [
     "longitude",
     "Country",   # numeric code from NetCDF
     "Calculated_LCOE",
+    "Estimated_WACC",
+    "OPEX_LCOE_Uniform",
+    "OPEX_LCOE_Country",
+    "CAPEX_LCOE_Uniform",
+    "CAPEX_LCOE_Country",
+    "WACC_LCOE_Uniform",
+    "WACC_LCOE_Country",
+    "Electricity_CI",
     "Uniform_LCOE",
     "electricity_production",
     "technical_potential",
@@ -551,8 +580,8 @@ else:
 if not df_sf.empty:
     df_sf = df_sf.dropna(subset=["Calculated_LCOE"], how="all")
 
-tab1, tab2, tab3, tab4 = st.tabs(
-    ["🗺️ Map Explorer", "🧮 CAPEX Sensitivity (Regional)", "🌍 Regional Summary", "🏳️ Country Summary"]
+tab1, tab2, tab3, tab4, tab5 = st.tabs(
+    ["🗺️ Map Explorer", "🕹 CAPEX Sensitivity (Regional)", "🌍 Regional Summary", "🔬 Country Heatmap", "📈 Country Potentials"]
 )
 
 # ==========================================================
@@ -578,12 +607,14 @@ with tab1:
         )
         metric = LABEL_TO_VAR[metric_label]
 
-        c1, c2 = st.columns([1, 1])
+        c1, c2, c3 = st.columns([1, 1, 1])
         with c1:
             color_scale = st.selectbox("Color scale", ["Viridis", "Turbo", "Plasma", "Cividis"], index=0)
         with c2:
             # default to maximum points
             max_points = st.slider("Max points on map", 2000, 50000, 50000, step=1000)
+        with c3:
+            point_size = st.slider("Point size", 1, 18, 7)
 
         df_map = df_sf.dropna(subset=[metric]).copy()
         if len(df_map) > max_points:
@@ -614,7 +645,9 @@ with tab1:
                 },
                 zoom=1,
                 height=650,
+                size_max=max(point_size, 1),
             )
+            fig.update_traces(marker=dict(size=point_size, opacity=0.8, sizemode='area'))
             metric_label_wrapped = metric_label.replace(" ", "<br>")
             fig.update_layout(
                 coloraxis_colorbar=dict(
@@ -656,12 +689,16 @@ with tab2:
 
                 # proxy regional electrolyser default from elec component (or tech default if preferred)
                 default_elec = 2.3 if tech == "Wind" else 3.0
+                estimated_wacc = df_reg["Estimated_WACC"]
+                default_wacc = estimated_wacc.mean()
 
                 c1, c2, c3, c4 = st.columns(4)
                 with c1:
                     solar_capex = st.number_input("Solar CAPEX (USD/kW)", min_value=100.0, max_value=6000.0, value=float(np.nan_to_num(reg_solar_mw, nan=990.0)), step=10.0)
                 with c2:
                     wind_capex = st.number_input("Wind CAPEX (USD/kW)", min_value=100.0, max_value=8000.0, value=float(np.nan_to_num(reg_wind_mw, nan=1500.0)), step=10.0)
+                with c3:
+                    wacc_reduction = st.number_input(f"Reduction on WACC baseline (regional mean of {default_wacc:.1f}%)", min_value=0.0, max_value=25.0, value=0.0, step=1.0)
                 with c4:
                     opex = st.number_input("Initial OPEX baseline (%, CAPEX)", min_value=0.0, max_value=10.0, value=default_elec, step=10.0)
 
@@ -673,22 +710,21 @@ with tab2:
                 if st.button("Run Regional CAPEX Recalculation", type="primary"):
                     out = change_capex_absolute_df(
                         df=df_reg,
+                        tech=tech,
                         solar_capex=solar_capex,
-                        solar_capex_original=float(np.nan_to_num(reg_solar_mw, nan=990.0)),
                         wind_capex=wind_capex,
-                        wind_capex_original=float(np.nan_to_num(reg_wind_mw, nan=1500.0)),
+                        opex_assumption=opex,
+                        estimated_wacc=float(np.nan_to_num(default_wacc, nan=0.0)),
+                        wacc_reduction=wacc_reduction,
+                        lifetime_years=20,
                     )
-                    st.metric("Regional mean ΔLCOE", f"{out['delta_LCOE'].mean():.3f}")
+                    #st.metric("Regional mean ΔLCOE", f"{out['delta_LCOE'].mean():.3f}")
 
                     # --- mini regional map of recalculated LCOE ---
                     # ---------------------------------------
                     # ---------------------------------------
                     VAR_MAP = {
-                        "Calculated_LCOE": {
-                            "label": "LCOE (USD/MWh)",
-                            "fmt": ":.3f",
-                        },
-                        "Calculated_LCOE": {
+                        "Recalculated_LCOE": {
                             "label": "Recalculated LCOE (USD/MWh)",
                             "fmt": ":.3f",
                         },
@@ -696,22 +732,10 @@ with tab2:
                             "label": "ΔLCOE (USD/MWh)",
                             "fmt": ":.3f",
                         },
-                        "carbon_intensity": {
-                            "label": "Carbon intensity (kgCO2/kgH2)",
-                            "fmt": ":.3f",
-                        },
-                        "electrolyser_capacity": {
-                            "label": "Electrolyser capacity (MW)",
-                            "fmt": ":.2f",
-                        },
-                        "technical_potential": {
-                            "label": "Hydrogen technical potential",
-                            "fmt": ":.2f",
-                        },
                     }
 
-                    LABEL_TO_VAR = {v["label"]: k for k, v in VAR_MAP.items()}
-                    map_metric = "Calculated_LCOE"
+                    local_label_to_var = {v["label"]: k for k, v in VAR_MAP.items()}
+                    map_metric = "Recalculated_LCOE"
                     metric_label = VAR_MAP[map_metric]["label"]
                     map_df = out.dropna(subset=[map_metric, "latitude", "longitude"]).copy()
 
@@ -722,18 +746,14 @@ with tab2:
                         if len(map_df) > max_region_points:
                             map_df = map_df.sample(max_region_points, random_state=42)
 
-                        q_hi = map_df[map_metric].quantile(0.98)
-                        if not np.isfinite(q_hi):
-                            q_hi = map_df[map_metric].max()
-                        if not np.isfinite(q_hi) or q_hi <= 0:
-                            q_hi = 1e-6
+                        q_hi = 150
 
                         hover_data = {
                             "region": True,
                             "country_name": True if "country_name" in map_df.columns else False,
                             "latitude": ":.2f",
                             "longitude": ":.2f",
-                            "Calculated_LCOE": VAR_MAP["Calculated_LCOE"]["fmt"] if "Calculated_LCOE" in map_df.columns else False,
+                            "Recalculated_LCOE": VAR_MAP["Recalculated_LCOE"]["fmt"] if "Recalculated_LCOE" in map_df.columns else False,
                             map_metric: VAR_MAP[map_metric]["fmt"],
                         }
 
@@ -769,35 +789,83 @@ with tab3:
     else:
         LCOE_field = st.selectbox(
             "LCOE field for summary",
-            options=[VAR_LABELS["Calculated_LCOE"]],
+            options=[VAR_LABELS["Calculated_LCOE"], VAR_LABELS["Uniform_LCOE"]],
             index=0,
             key="region_LCOE_field",
         )
+        st.write(LCOE_field)
         LCOE_var = LABEL_TO_VAR[LCOE_field]
         reg_summary = summarize_group(df_sf, group_col="region", LCOE_col=LCOE_var)
         if reg_summary.empty:
             st.warning("No regional summary available.")
         else:
             st.markdown("### Regional LCOE comparison")
-            # Build component summary from df_sf directly
-            reg_break = regional_LCOE_component_breakdown(df_sf)
+            breakdown_suffix = "Country" if LCOE_var == "Calculated_LCOE" else "Uniform"
+            breakdown_cols = {
+                "Capex costs": f"CAPEX_LCOE_{breakdown_suffix}",
+                "Opex costs": f"OPEX_LCOE_{breakdown_suffix}",
+                "WACC costs": f"WACC_LCOE_{breakdown_suffix}",
+            }
+
+            missing_cols = [col for col in breakdown_cols.values() if col not in df_sf.columns]
+            if missing_cols:
+                st.warning(
+                    f"Missing breakdown columns for selected field: {missing_cols}. Falling back to computed component breakdown."
+                )
+                reg_break = regional_LCOE_component_breakdown(df_sf)
+                abs_vars = ["residual_finance_other_LCOE", "capex_LCOE", "opex_LCOE"]
+                share_vars = ["residual_share", "capex_share", "opex_share"]
+                comp_map_abs = {
+                    "capex_LCOE": "Capex costs",
+                    "opex_LCOE": "Opex costs",
+                    "residual_finance_other_LCOE": "Residual finance",
+                }
+                comp_map_share = {
+                    "capex_share": "Capex costs",
+                    "opex_share": "Opex costs",
+                    "residual_share": "Residual finance",
+                }
+            else:
+                comp_df = df_sf.dropna(subset=["region", LCOE_var] + list(breakdown_cols.values())).copy()
+                comp_df["CAPEX_LCOE"] = comp_df[breakdown_cols["Capex costs"]].astype(float) * comp_df[LCOE_var].astype(float) / 100
+                comp_df["OPEX_LCOE"] = comp_df[breakdown_cols["Opex costs"]].astype(float) * comp_df[LCOE_var].astype(float) / 100
+                comp_df["WACC_LCOE"] = comp_df[breakdown_cols["WACC costs"]].astype(float) * comp_df[LCOE_var].astype(float) / 100
+
+                reg_break = (
+                    comp_df.groupby("region", as_index=False)
+                    .agg(
+                        CAPEX_LCOE=("CAPEX_LCOE", "median"),
+                        OPEX_LCOE=("OPEX_LCOE", "median"),
+                        WACC_LCOE=("WACC_LCOE", "median"),
+                    )
+                )
+                reg_break["LCOE_total_components"] = (
+                    reg_break[["CAPEX_LCOE", "OPEX_LCOE", "WACC_LCOE"]].sum(axis=1)
+                )
+                reg_break["capex_share"] = reg_break["CAPEX_LCOE"] / reg_break["LCOE_total_components"].replace({0: np.nan})
+                reg_break["opex_share"] = reg_break["OPEX_LCOE"] / reg_break["LCOE_total_components"].replace({0: np.nan})
+                reg_break["wacc_share"] = reg_break["WACC_LCOE"] / reg_break["LCOE_total_components"].replace({0: np.nan})
+                abs_vars = ["CAPEX_LCOE", "OPEX_LCOE", "WACC_LCOE"]
+                share_vars = ["capex_share", "opex_share", "wacc_share"]
+                comp_map_abs = {
+                    "CAPEX_LCOE": "Capex costs",
+                    "OPEX_LCOE": "Opex costs",
+                    "WACC_LCOE": "WACC costs",
+                }
+                comp_map_share = {
+                    "capex_share": "Capex costs",
+                    "opex_share": "Opex costs",
+                    "wacc_share": "WACC costs",
+                }
 
             # Stacked absolute components
             comp_long = reg_break.melt(
                 id_vars="region",
-                value_vars=[
-                    "residual_finance_other_LCOE",
-                    "capex_LCOE",
-                    "opex_LCOE",
-                ],
+                value_vars=abs_vars,
                 var_name="component",
                 value_name="LCOE_component",
             )
-            comp_long["component"] = comp_long["component"].map({
-                "capex_LCOE": "Capex costs",
-                "opex_LCOE": "Opex costs",
-                "residual_finance_other_LCOE": "Residual finance",
-            })
+            comp_long["component"] = comp_long["component"].map(comp_map_abs)
 
             fig_abs = px.bar(
                 comp_long,
@@ -805,7 +873,7 @@ with tab3:
                 y="LCOE_component",
                 color="component",
                 barmode="stack",
-                title="Contributions to the LCOE (USD/MWh)",
+                title=f"Contributions to the {breakdown_suffix} LCOE (USD/MWh)",
                 labels={"LCOE_component": "LCOE component (USD/MWh)", "region": "Region"},
             )
             fig_abs.update_layout(xaxis_tickangle=-35)
@@ -814,15 +882,11 @@ with tab3:
             # 100% stacked shares
             share_long = reg_break.melt(
                 id_vars="region",
-                value_vars=["residual_share", "capex_share", "opex_share"],
+                value_vars=share_vars,
                 var_name="component",
                 value_name="share",
             )
-            share_long["component"] = share_long["component"].map({
-                "capex_share": "Capex costs",
-                "opex_share": "Opex costs",
-                "residual_share": "Residual finance",
-            })
+            share_long["component"] = share_long["component"].map(comp_map_share)
 
             fig_share = px.bar(
                 share_long,
@@ -830,7 +894,7 @@ with tab3:
                 y="share",
                 color="component",
                 barmode="stack",
-                title="Contributions to the LCOE (share)",
+                title=f"Contributions to the {breakdown_suffix} LCOE (share)",
                 labels={"share": "Share of LCOE", "region": "Region"},
             )
             fig_share.update_layout(xaxis_tickangle=-35, yaxis_tickformat=".0%")
@@ -840,14 +904,13 @@ with tab3:
 # TAB 4: COUNTRY SUMMARY (new)
 # ==========================================================
 with tab4:
-    st.subheader("Country Summary (grouped by country)")
     if df_sf.empty:
         st.warning("No data found.")
     else:
         if "Country" not in df_sf.columns or df_sf["Country"].isna().all():
             st.info("Country column not yet available in dataset. Add 'country' variable to enable this tab.")
         else:
-            st.markdown("### Country deep-dive")
+            st.markdown("### Country LCOE distribution")
 
             country_options = sorted(df_sf["country_name"].dropna().unique().tolist())
             selected_country = st.selectbox("Select country", country_options, key="country_select")
@@ -889,7 +952,7 @@ with tab4:
                 lat_c = float(df_country["latitude"].mean())
                 lon_c = float(df_country["longitude"].mean())
 
-                value_col = "Calculated_LCOE"
+                value_col = "Selected_LCOE"
 
                 geojson_cells, df_cells = build_cell_geojson(df_country, value_col=value_col, id_col="cell_id")
 
@@ -915,7 +978,7 @@ with tab4:
                             "longitude": ":.2f",
                             "region": True,
                             "country_name": True,
-                            "Calculated_LCOE": ":.3f",
+                            "Selected_LCOE": ":.3f",
                         },
                         center={"lat": lat_c, "lon": lon_c},
                         zoom=4,
@@ -926,60 +989,104 @@ with tab4:
                     fig_cells.update_layout(mapbox_style="carto-positron", margin=dict(l=0, r=0, t=40, b=0))
                     st.plotly_chart(fig_cells, use_container_width=True)
 
-                # ---- cumulative cost-technical potential curve ----
-                curve = df_country.dropna(subset=["Calculated_LCOE", "technical_potential"]).copy()
-                curve = curve[curve["technical_potential"] > 0].copy()
 
-                if curve.empty:
-                    st.info("No positive technical potential data available for cumulative curve.")
-                else:
-                    curve = curve.sort_values("Calculated_LCOE")
-                    curve["cum_potential"] = curve["technical_potential"].cumsum()
-                    curve["cum_potential_share"] = curve["cum_potential"] / curve["technical_potential"].sum()
-                    curve["Calculated_LCOE"] = pd.to_numeric(curve["Calculated_LCOE"], errors="coerce")
+with tab5:
+    if df_sf.empty:
+        st.warning("No data found.")
+    else:
+        if "Country" not in df_sf.columns or df_sf["Country"].isna().all():
+            st.info("Country column not yet available in dataset. Add 'country' variable to enable this tab.")
+        else:
+            st.markdown("### Country LCOE-Potential")
+            country_options = sorted(df_sf["country_name"].dropna().unique().tolist())
+            selected_country = st.selectbox("Select country", country_options, key="country_select_2")
 
-                    lcoe_series = ["Calculated_LCOE"]
-                    if "Uniform_LCOE" in curve.columns:
-                        curve["Uniform_LCOE"] = pd.to_numeric(curve["Uniform_LCOE"], errors="coerce")
-                        lcoe_series.append("Uniform_LCOE")
+            df_country = df_sf[df_sf["country_name"] == selected_country].copy()
 
-                    curve_long = curve.melt(
-                        id_vars=["cum_potential", "cum_potential_share"],
-                        value_vars=lcoe_series,
-                        var_name="lcoe_metric",
-                        value_name="LCOE",
-                    )
-                    curve_long["lcoe_metric"] = curve_long["lcoe_metric"].replace({
-                        "Calculated_LCOE": "Calculated LCOE",
-                        "Uniform_LCOE": "Uniform LCOE",
-                    })
+            if df_country.empty:
+                st.warning("No data for selected country.")
+            else:
+                # ---- metrics ----
+                LCOE_min = df_country["Calculated_LCOE"].min()
+                LCOE_p10 = df_country["Calculated_LCOE"].quantile(0.10)
+                LCOE_p50 = df_country["Calculated_LCOE"].median()
+                LCOE_p90 = df_country["Calculated_LCOE"].quantile(0.90)
+                LCOE_max = df_country["Calculated_LCOE"].max()
 
-                    fig_curve = px.line(
-                        curve_long,
-                        x="cum_potential",
-                        y="LCOE",
-                        color="lcoe_metric",
-                        title=f"{selected_country}: cumulative cost-technical potential curve",
-                        labels={
-                            "cum_potential": "Cumulative technical potential",
-                            "LCOE": "LCOE (USD/MWh)",
-                            "lcoe_metric": "LCOE series",
-                        },
-                    )
-                    fig_curve.update_yaxes(rangemode="tozero")
-                    st.plotly_chart(fig_curve, use_container_width=True)
+                c1, c2, c3, c4, c5 = st.columns(5)
+                c1.metric("Minimum LCOE (National)", f"{LCOE_min:.2f}")
+                c2.metric("LCOE 10th percentile (National)", f"{LCOE_p10:.2f}")
+                c3.metric("LCOE median (National)", f"{LCOE_p50:.2f}")
+                c4.metric("LCOE 90th percentile (National)", f"{LCOE_p90:.2f}")
+                c5.metric("Maximum LCOE (National)", f"{LCOE_max:.2f}")
 
-                    fig_curve_share = px.line(
-                        curve_long,
-                        x="cum_potential_share",
-                        y="LCOE",
-                        color="lcoe_metric",
-                        title=f"{selected_country}: cumulative curve (normalised potential)",
-                        labels={
-                            "cum_potential_share": "Cumulative potential share",
-                            "LCOE": "LCOE (USD/MWh)",
-                            "lcoe_metric": "LCOE series",
-                        },
-                    )
-                    fig_curve_share.update_yaxes(rangemode="tozero")
-                    st.plotly_chart(fig_curve_share, use_container_width=True)
+                # ---- metrics ----
+                LCOE_min_uniform = df_country["Uniform_LCOE"].min()
+                LCOE_p10_uniform = df_country["Uniform_LCOE"].quantile(0.10)
+                LCOE_p50_uniform = df_country["Uniform_LCOE"].median()
+                LCOE_p90_uniform = df_country["Uniform_LCOE"].quantile(0.90)
+                LCOE_max_uniform = df_country["Uniform_LCOE"].max()
+
+                c1, c2, c3, c4, c5 = st.columns(5)
+                c1.metric("Minimum LCOE (Uniform)", f"{LCOE_min_uniform:.2f}")
+                c2.metric("LCOE 10th percentile (Uniform)", f"{LCOE_p10_uniform:.2f}")
+                c3.metric("LCOE median (Uniform)", f"{LCOE_p50_uniform:.2f}")
+                c4.metric("LCOE 90th percentile (Uniform)", f"{LCOE_p90_uniform:.2f}")
+                c5.metric("Maximum LCOE (Uniform)", f"{LCOE_max_uniform:.2f}")
+            # ---- cumulative cost-technical potential curve ----
+            curve = df_country.dropna(subset=["Calculated_LCOE", "technical_potential"]).copy()
+            curve = curve[curve["technical_potential"] > 0].copy()
+
+            if curve.empty:
+                st.info("No positive technical potential data available for cumulative curve.")
+            else:
+                curve = curve.sort_values("Calculated_LCOE")
+                curve["cum_potential"] = curve["technical_potential"].cumsum()
+                curve["cum_potential_share"] = curve["cum_potential"] / curve["technical_potential"].sum()
+                curve["Calculated_LCOE"] = pd.to_numeric(curve["Calculated_LCOE"], errors="coerce")
+
+                lcoe_series = ["Calculated_LCOE"]
+                if "Uniform_LCOE" in curve.columns:
+                    curve["Uniform_LCOE"] = pd.to_numeric(curve["Uniform_LCOE"], errors="coerce")
+                    lcoe_series.append("Uniform_LCOE")
+
+                curve_long = curve.melt(
+                    id_vars=["cum_potential", "cum_potential_share"],
+                    value_vars=lcoe_series,
+                    var_name="lcoe_metric",
+                    value_name="LCOE",
+                )
+                curve_long["lcoe_metric"] = curve_long["lcoe_metric"].replace({
+                    "Calculated_LCOE": "Calculated LCOE",
+                    "Uniform_LCOE": "Uniform LCOE",
+                })
+
+                fig_curve = px.line(
+                    curve_long,
+                    x="cum_potential",
+                    y="LCOE",
+                    color="lcoe_metric",
+                    title=f"{selected_country}: cumulative cost-technical potential curve",
+                    labels={
+                        "cum_potential": "Cumulative technical potential",
+                        "LCOE": "LCOE (USD/MWh)",
+                        "lcoe_metric": "LCOE series",
+                    },
+                )
+                fig_curve.update_yaxes(rangemode="tozero")
+                st.plotly_chart(fig_curve, use_container_width=True)
+
+                fig_curve_share = px.line(
+                    curve_long,
+                    x="cum_potential_share",
+                    y="LCOE",
+                    color="lcoe_metric",
+                    title=f"{selected_country}: cumulative curve (normalised potential)",
+                    labels={
+                        "cum_potential_share": "Cumulative potential share",
+                        "LCOE": "LCOE (USD/MWh)",
+                        "lcoe_metric": "LCOE series",
+                    },
+                )
+                fig_curve_share.update_yaxes(rangemode="tozero")
+                st.plotly_chart(fig_curve_share, use_container_width=True)
