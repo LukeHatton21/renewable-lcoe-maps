@@ -601,7 +601,6 @@ with tab1:
                 VAR_LABELS["electricity_production"],
                 VAR_LABELS["technical_potential"],
                 VAR_LABELS["Electricity_CI"],
-                VAR_LABELS["technical_potential"],
             ],
             index=0,
         )
@@ -625,7 +624,7 @@ with tab1:
         else:
             q_low = df_map[metric].quantile(0.02)
             if metric == "Calculated_LCOE" or metric == "Uniform_LCOE":
-                q_hi = 250
+                q_hi = 150
             else:
                 q_hi = df_map[metric].quantile(0.75)
             if np.isclose(q_low, q_hi):
