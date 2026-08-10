@@ -16,17 +16,31 @@ st.caption("Explore spatial variation in potential, LCOE and mitigation effects 
 # =========================
 # Secrets / URLs
 # =========================
-SOLAR_URL = os.getenv("SOLAR_URL", "")
-WIND_URL = os.getenv("WIND_URL", "")
+def get_secret(key: str) -> str | None:
+    """
+    Fetch a secret using the priority chain:
+      1. Streamlit secrets (st.secrets)   ← production (Streamlit Cloud)
+      2. Environment variable (os.getenv) ← local dev / Docker
+      3. Returns None if not found        ← triggers warning
+    """
+    try:
+        return st.secrets[key]
+    except (KeyError, FileNotFoundError):
+        return os.getenv(key, None)
 
-SOLAR_URL = "https://www.dropbox.com/scl/fi/rv6lbuk00yryfznkkkdwg/SOLAR_TOTAL_RESULTS.nc?rlkey=cs71w2nni36w4x5dp6srtsnv3&st=y8dew6wi&dl=0&dl=1"
-WIND_URL = "https://www.dropbox.com/scl/fi/gjf8f4iko67wvufuphptm/WIND_TOTAL_RESULTS.nc?rlkey=vjny9o28wndwit8scirkb7rme&st=6trhmznn&dl=0&dl=1"
+SOLAR_URL = get_secret("SOLAR_URL")
+WIND_URL  = get_secret("WIND_URL")
 
-try:
-    SOLAR_URL = st.secrets.get("SOLAR_URL", SOLAR_URL)
-    WIND_URL = st.secrets.get("WIND_URL", WIND_URL)
-except Exception:
-    pass
+# Validate and warn
+_missing = [name for name, val in [("SOLAR_URL", SOLAR_URL), ("WIND_URL", WIND_URL)] if not val]
+
+if _missing:
+    st.error(
+        f"⚠️ The following required URLs are not configured: **{', '.join(_missing)}**\n\n"
+        "Please contact the app administrator or check that secrets are correctly set.",
+        icon="🔒"
+    )
+    st.stop()  # ← Halts the app cleanly, nothing below this runs
 
 # =========================
 # Paths
