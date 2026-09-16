@@ -9,9 +9,9 @@ import requests
 import streamlit as st
 import xarray as xr
 
-st.set_page_config(page_title="Renewables Cost & Carbon Explorer", layout="wide")
-st.title("Renewable Cost & Potential Explorer")
-st.caption("Explore spatial variation in potential, LCOE and mitigation effects worldwide from solar and wind.")
+st.set_page_config(page_title="Renewables Cost Ninja", layout="wide")
+st.title("Renewables Cost Ninja")
+st.caption("Explore spatial variation in renewable potential, LCOE and mitigation effects worldwide from solar and wind.")
 
 # =========================
 # Secrets / URLs
@@ -561,6 +561,22 @@ with st.sidebar:
     st.header("Global Controls")
     tech = st.selectbox("Renewable Technology", ["Wind", "Solar"], index=0)
     scenario = st.selectbox("Cost of capital scenario", ["Uniform", "National"], index=0)
+    st.subheader("About")
+    with st.sidebar.expander("About this app", expanded=False):
+        st.sidebar.markdown(
+        """
+    This app presents results from a geospatial renewables model, exploring how the cost of capital and regional deployment
+    influence estimated electricity costs and mitigation effects by location. 
+
+    **Reference**  
+    Hatton, L., Oluleye, G., Jansen, M. *et al.* **High costs of capital shape the mitigation effects of renewable energy deployment globally.**  
+    *Nature Communications* **17**, 9733 (2026).  
+    [https://doi.org/10.1038/s41467-026-75666-6](https://doi.org/10.1038/s41467-026-75666-6)
+
+    *Contact*
+    L. Hatton at l.hatton23@imperial.ac.uk
+    """
+    )
 
 needed_cols = [
     "latitude",
@@ -644,7 +660,7 @@ with tab1:
             if np.isclose(q_low, q_hi):
                 q_low, q_hi = df_map[metric].min(), df_map[metric].max()
 
-            fig = px.scatter_mapbox(
+            fig = px.scatter_map(
                 df_map,
                 lat="latitude",
                 lon="longitude",
@@ -670,7 +686,7 @@ with tab1:
                     title=dict(
                         text=metric_label_wrapped
                     )))
-            fig.update_layout(mapbox_style="carto-positron", margin=dict(l=0, r=0, t=0, b=0))
+            fig.update_layout(map_style="carto-positron", margin=dict(l=0, r=0, t=0, b=0))
             st.plotly_chart(fig, use_container_width=True)
 
 # ==========================================================
