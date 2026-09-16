@@ -687,7 +687,7 @@ with tab1:
                         text=metric_label_wrapped
                     )))
             fig.update_layout(map_style="carto-positron", margin=dict(l=0, r=0, t=0, b=0))
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width="stretch")
 
 # ==========================================================
 # TAB 2: CAPEX SENSITIVITY (REGIONAL ONLY)
@@ -797,7 +797,7 @@ with tab2:
                             center_lat = float(map_df_cells["latitude"].mean())
                             center_lon = float(map_df_cells["longitude"].mean())
 
-                            fig = px.choropleth_mapbox(
+                            fig = px.choropleth_map(
                                 map_df_cells,
                                 geojson=geojson_map,
                                 locations="cell_id",
@@ -815,12 +815,12 @@ with tab2:
                             )
 
                             fig.update_layout(
-                                mapbox_style="carto-positron",
+                                map_style="carto-positron",
                                 coloraxis_colorbar=dict(title=metric_label),
                                 margin=dict(l=0, r=0, t=30, b=0),
                             )
 
-                        st.plotly_chart(fig, use_container_width=True)
+                        st.plotly_chart(fig, width="stretch")
 
 # ==========================================================
 # TAB 3: REGIONAL SUMMARY
@@ -920,7 +920,7 @@ with tab3:
                 labels={"LCOE_component": "LCOE component (USD/MWh)", "region": "Region"},
             )
             fig_abs.update_layout(xaxis_tickangle=-35)
-            st.plotly_chart(fig_abs, use_container_width=True)
+            st.plotly_chart(fig_abs, width="stretch")
 
             # 100% stacked shares
             share_long = reg_break.melt(
@@ -941,7 +941,7 @@ with tab3:
                 labels={"share": "Share of LCOE", "region": "Region"},
             )
             fig_share.update_layout(xaxis_tickangle=-35, yaxis_tickformat=".0%")
-            st.plotly_chart(fig_share, use_container_width=True)
+            st.plotly_chart(fig_share, width="stretch")
 
 # ==========================================================
 # TAB 4: COUNTRY SUMMARY (new)
@@ -1008,7 +1008,7 @@ with tab4:
                     LCOE_MIN = 0.0
                     LCOE_MAX = 150.0
 
-                    fig_cells = px.choropleth_mapbox(
+                    fig_cells = px.choropleth_map(
                         df_cells,
                         geojson=geojson_cells,
                         locations="cell_id",
@@ -1029,8 +1029,8 @@ with tab4:
                         title=f"{selected_country}: LCOE distribution",
                         height=700,
                     )
-                    fig_cells.update_layout(mapbox_style="carto-positron", margin=dict(l=0, r=0, t=40, b=0))
-                    st.plotly_chart(fig_cells, use_container_width=True)
+                    fig_cells.update_layout(map_style="carto-positron", margin=dict(l=0, r=0, t=40, b=0))
+                    st.plotly_chart(fig_cells, width="stretch")
 
 
 with tab5:
@@ -1117,7 +1117,7 @@ with tab5:
                     },
                 )
                 fig_curve.update_yaxes(rangemode="tozero")
-                st.plotly_chart(fig_curve, use_container_width=True)
+                st.plotly_chart(fig_curve, width="stretch")
 
                 fig_curve_share = px.line(
                     curve_long,
@@ -1132,4 +1132,4 @@ with tab5:
                     },
                 )
                 fig_curve_share.update_yaxes(rangemode="tozero")
-                st.plotly_chart(fig_curve_share, use_container_width=True)
+                st.plotly_chart(fig_curve_share, width="stretch")
