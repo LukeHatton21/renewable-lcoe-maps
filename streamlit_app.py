@@ -565,8 +565,8 @@ with st.sidebar:
     with st.sidebar.expander("About this app", expanded=False):
         st.sidebar.markdown(
         """
-    This app presents results from a geospatial renewables model, exploring how the cost of capital and regional deployment
-    influence estimated electricity costs and mitigation effects by location. 
+    This app allows exploration of the results from a geospatial renewables model, enabling how the cost of capital and regional deployment
+    influence estimated electricity costs and mitigation effects under two scenarios (1) Uniform: average technology CoC in Annex II countries applied globally and (2) National: individual CoC country estimates. 
 
     **Reference**  
     Hatton, L., Oluleye, G., Jansen, M. *et al.* **High costs of capital shape the mitigation effects of renewable energy deployment globally.**  
